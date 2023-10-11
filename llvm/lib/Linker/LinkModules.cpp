@@ -502,10 +502,15 @@ bool ModuleLinker::run() {
       if (const Comdat *SC = GV.getComdat())
         LazyComdatMembers[SC].push_back(&GV);
 
-  for (Function &SF : *SrcM)
+  for (Function &SF : *SrcM){
+    if(!SF.isIntrinsic()){
+      SF.setName(SrcM->getName() + SF.getName());
+      errs() << "SUSAN: function: " << SF << "\n";
+    }
     if (SF.hasLinkOnceLinkage())
       if (const Comdat *SC = SF.getComdat())
         LazyComdatMembers[SC].push_back(&SF);
+  }
 
   for (GlobalAlias &GA : SrcM->aliases())
     if (GA.hasLinkOnceLinkage())
