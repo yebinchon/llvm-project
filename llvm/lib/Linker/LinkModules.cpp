@@ -503,9 +503,10 @@ bool ModuleLinker::run() {
         LazyComdatMembers[SC].push_back(&GV);
 
   for (Function &SF : *SrcM){
-    if(!SF.isIntrinsic()){
-      SF.setName(SrcM->getName() + SF.getName());
-      errs() << "SUSAN: function: " << SF << "\n";
+    if(!SF.isIntrinsic() &&
+        SF.getName() != "main" &&
+        SF.getName() != "printf"){
+      SF.setName(SrcM->getName() + "_CudaFE_" + SF.getName());
     }
     if (SF.hasLinkOnceLinkage())
       if (const Comdat *SC = SF.getComdat())
