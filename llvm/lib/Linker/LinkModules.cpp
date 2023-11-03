@@ -503,11 +503,14 @@ bool ModuleLinker::run() {
         LazyComdatMembers[SC].push_back(&GV);
 
   for (Function &SF : *SrcM){
-    if(!SF.isIntrinsic() &&
-        SF.getName() != "main" &&
-        SF.getName() != "printf"){
-      SF.setName(SrcM->getName() + "_CudaFE_" + SF.getName());
-    }
+    for(auto &DF : DstM)
+      if(DF.getName() == SF.getName() &&
+          !DF.isDeclaration() &&
+          !SF.isDeclaration()){
+        SF.setName(SrcM->getName() + "_CudaFE_" + SF.getName());
+        break;
+      }
+
     if (SF.hasLinkOnceLinkage())
       if (const Comdat *SC = SF.getComdat())
         LazyComdatMembers[SC].push_back(&SF);
