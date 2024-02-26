@@ -1367,12 +1367,11 @@ Error IRLinker::run() {
     DstM.setDataLayout(SrcM->getDataLayout());
 
   if (SrcM->getDataLayout() != DstM.getDataLayout()) {
-    DstM.setDataLayout("e-m:e-i64:64-f80:128-n8:16:32:64-S128");
-    //emitWarning("Linking two modules of different data layouts: '" +
-    //            SrcM->getModuleIdentifier() + "' is '" +
-    //            SrcM->getDataLayoutStr() + "' whereas '" +
-    //            DstM.getModuleIdentifier() + "' is '" +
-    //            DstM.getDataLayoutStr() + "'\n");
+    emitWarning("Linking two modules of different data layouts: '" +
+                SrcM->getModuleIdentifier() + "' is '" +
+                SrcM->getDataLayoutStr() + "' whereas '" +
+                DstM.getModuleIdentifier() + "' is '" +
+                DstM.getDataLayoutStr() + "'\n");
   }
 
   // Copy the target triple from the source to dest if the dest's is empty.
@@ -1383,15 +1382,18 @@ Error IRLinker::run() {
 
   if (!SrcM->getTargetTriple().empty()&&
       !SrcTriple.isCompatibleWith(DstTriple)){
-    DstM.setTargetTriple("x86_64-unknown-linux-gnu");
-   // emitWarning("Linking two modules of different target triples: " +
-   //             SrcM->getModuleIdentifier() + "' is '" +
-   //             SrcM->getTargetTriple() + "' whereas '" +
-   //             DstM.getModuleIdentifier() + "' is '" + DstM.getTargetTriple() +
-   //             "'\n");
+    emitWarning("Linking two modules of different target triples: " +
+                SrcM->getModuleIdentifier() + "' is '" +
+                SrcM->getTargetTriple() + "' whereas '" +
+                DstM.getModuleIdentifier() + "' is '" + DstM.getTargetTriple() +
+                "'\n");
   }
 
   DstM.setTargetTriple(SrcTriple.merge(DstTriple));
+  if(DstM.getModuleIdentifier() == "llvm-link-cudafe"){
+    DstM.setTargetTriple("x86_64-unknown-linux-gnu");
+    DstM.setDataLayout("e-m:e-i64:64-f80:128-n8:16:32:64-S128");
+  }
 
   // Append the module inline asm string.
   if (!IsPerformingImport && !SrcM->getModuleInlineAsm().empty()) {

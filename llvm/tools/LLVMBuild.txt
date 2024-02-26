@@ -37,6 +37,7 @@ subdirectories =
  llvm-jitlistener
  llvm-jitlink
  llvm-link
+ llvm-link-cudafe
  llvm-lto
  llvm-mc
  llvm-mca
