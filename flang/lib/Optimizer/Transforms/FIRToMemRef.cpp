@@ -169,10 +169,8 @@ private:
   template <typename OpTy>
   void collectSliceInfoFrom(OpTy op, SliceInfo &info) const;
 
-  /// When `!fir.shape` is a block argument (forwarded from predecessors), fill
-  /// `shapeVecOut` with extent SSA values. Handles identical forwarded shapes
-  /// and `fir.select_case` split between `#fir.point` (single compare value)
-  /// and `unit` arms forwarding distinct `fir.shape` values.
+  /// When `!fir.shape` is a block argument and all incoming edges forward the
+  /// same shape, fill `shapeVecOut`.
   bool materializeForwardedShapeExtents(Value shapeVal, PatternRewriter &rewriter,
                                         Location loc,
                                         SmallVectorImpl<Value> &shapeVecOut) const;
@@ -427,6 +425,8 @@ static Value castTypeToIndexType(Value originalValue,
                                     originalValue);
 }
 
+// TODO: This currently only handles a very narrow case where all incoming edges
+// forward the same fir.shape op
 bool FIRToMemRef::materializeForwardedShapeExtents(
     Value shapeVal, PatternRewriter &rewriter, Location loc,
     SmallVectorImpl<Value> &shapeVecOut) const {
