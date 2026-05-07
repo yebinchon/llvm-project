@@ -62,11 +62,13 @@
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -166,6 +168,14 @@ private:
 
   template <typename OpTy>
   void collectSliceInfoFrom(OpTy op, SliceInfo &info) const;
+
+  /// When `!fir.shape` is a block argument (forwarded from predecessors), fill
+  /// `shapeVecOut` with extent SSA values. Handles identical forwarded shapes
+  /// and `fir.select_case` split between `#fir.point` (single compare value)
+  /// and `unit` arms forwarding distinct `fir.shape` values.
+  bool materializeForwardedShapeExtents(Value shapeVal, PatternRewriter &rewriter,
+                                        Location loc,
+                                        SmallVectorImpl<Value> &shapeVecOut) const;
 
   void populateShapeAndShift(SmallVectorImpl<Value> &shapeVec,
                              SmallVectorImpl<Value> &shiftVec,
@@ -315,12 +325,15 @@ void FIRToMemRef::collectSliceInfoFrom(OpTy op, SliceInfo &info) const {
     if (shapeVal) {
       Operation *shapeValOp = shapeVal.getDefiningOp();
 
-      if (auto shapeOp = dyn_cast<fir::ShapeOp>(shapeValOp)) {
-        populateShape(info.shapeVec, shapeOp);
-      } else if (auto shapeShiftOp = dyn_cast<fir::ShapeShiftOp>(shapeValOp)) {
-        populateShapeAndShift(info.shapeVec, info.shiftVec, shapeShiftOp);
-      } else if (auto shiftOp = dyn_cast<fir::ShiftOp>(shapeValOp)) {
-        populateShift(info.shiftVec, shiftOp);
+      if (shapeValOp) {
+        if (auto shapeOp = dyn_cast<fir::ShapeOp>(shapeValOp)) {
+          populateShape(info.shapeVec, shapeOp);
+        } else if (auto shapeShiftOp =
+                       dyn_cast<fir::ShapeShiftOp>(shapeValOp)) {
+          populateShapeAndShift(info.shapeVec, info.shiftVec, shapeShiftOp);
+        } else if (auto shiftOp = dyn_cast<fir::ShiftOp>(shapeValOp)) {
+          populateShift(info.shiftVec, shiftOp);
+        }
       }
     }
 
@@ -412,6 +425,66 @@ static Value castTypeToIndexType(Value originalValue,
   Type indexType = rewriter.getIndexType();
   return arith::IndexCastOp::create(rewriter, originalValue.getLoc(), indexType,
                                     originalValue);
+}
+
+bool FIRToMemRef::materializeForwardedShapeExtents(
+    Value shapeVal, PatternRewriter &rewriter, Location loc,
+    SmallVectorImpl<Value> &shapeVecOut) const {
+  if (!shapeVal)
+    return false;
+  auto shapeBlockArg = dyn_cast<BlockArgument>(shapeVal);
+  if (!shapeBlockArg)
+    return false;
+
+  Block *destBlock = shapeBlockArg.getOwner();
+  const unsigned argNo = shapeBlockArg.getArgNumber();
+
+  struct Incoming {
+    Operation *term;
+    unsigned succNo;
+    fir::ShapeOp shapeOp;
+  };
+  SmallVector<Incoming, 4> incomings;
+  llvm::SmallSet<std::pair<Operation *, unsigned>, 8> seenEdges;
+
+  for (BlockOperand &succUse : destBlock->getUses()) {
+    Operation *term = succUse.getOwner();
+    auto branchIface = dyn_cast<BranchOpInterface>(term);
+    if (!branchIface)
+      return false;
+
+    const unsigned succNo = succUse.getOperandNumber();
+    SuccessorOperands succOperands = branchIface.getSuccessorOperands(succNo);
+    if (argNo >= succOperands.size())
+      return false;
+
+    Value incoming = succOperands[argNo];
+    if (!incoming)
+      return false;
+
+    while (auto cnv = incoming.getDefiningOp<fir::ConvertOp>())
+      incoming = cnv.getValue();
+
+    auto shapeOp = incoming.getDefiningOp<fir::ShapeOp>();
+    if (!shapeOp)
+      return false;
+
+    const std::pair<Operation *, unsigned> edge{term, succNo};
+    if (!seenEdges.insert(edge).second)
+      continue;
+    incomings.push_back(Incoming{term, succNo, shapeOp});
+  }
+
+  if (incomings.empty())
+    return false;
+
+  for (unsigned i = 1; i < incomings.size(); ++i) {
+    if (incomings[i].shapeOp != incomings[0].shapeOp) {
+      return false;
+    }
+  }
+  populateShape(shapeVecOut, incomings[0].shapeOp);
+  return true;
 }
 
 static bool shouldUseBoundaryBitcast(mlir::Type fromTy, mlir::Type toTy) {
@@ -667,7 +740,18 @@ FIRToMemRef::convertArrayCoorOp(Operation *memOp, fir::ArrayCoorOp arrayCoorOp,
   }
 
   SmallVector<Value> &shapeVec = sliceInfo.shapeVec;
+  if (!sliceInfo.hasProjectedSlice && shapeVec.empty())
+    (void)materializeForwardedShapeExtents(arrayCoorOp.getShape(), rewriter, loc,
+                                           shapeVec);
+
   if (sliceInfo.hasProjectedSlice || shapeVec.empty()) {
+    // Without extents we must read descriptor metadata. That is only valid for
+    // boxed entities; plain `!fir.ref<!fir.array<...>>` (e.g. forwarded shape
+    // from merges we do not recover) cannot use fir.box_* ops.
+    if (!sliceInfo.hasProjectedSlice && shapeVec.empty() && !isDescriptor &&
+        !isRebox)
+      return failure();
+
     // Projected slices carry their physical layout in the descriptor. Rebuild
     // the MemRef view from box metadata instead of from slice triplets.
     auto boxElementSize =
